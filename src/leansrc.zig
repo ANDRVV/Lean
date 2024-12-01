@@ -20,9 +20,9 @@ pub fn BasedValue(comptime T: type) type {
         var matrix = std.ArrayList([]T).init(arena.allocator());
 
         pub inline fn rows() usize { return matrix.items.len; }
-        pub inline fn columns() usize { return matrix.items[0].len; }
-        pub inline fn scheme() [2]usize { return .{matrix.items[0].len, matrix.items.len}; }
-        pub inline fn size() usize { return matrix.items[0].len * matrix.items.len; }
+        pub inline fn columns() usize { return if (rows() > 0) matrix.items[0].len else 0; }
+        pub inline fn scheme() [2]usize { return .{columns(), rows()}; }
+        pub inline fn size() usize { return columns() * rows(); }
         pub inline fn content() [][]T { return matrix.items; }
 
         /// Print matrix as fast as possible
@@ -89,12 +89,6 @@ pub fn BasedValue(comptime T: type) type {
             return marray;
         }
 
-        /// Adds a row
-        pub inline fn AddRow(row: []const T) !void {
-            const mutable = try arena.allocator().dupe(T, row);
-            try matrix.append(mutable);
-        }
-
         /// Change a specified row
         pub fn ChangeRow(newRow: []const T, rowIndex: usize) !void {
             if (rows() <= rowIndex or columns() != newRow.len) return error.RowOutOfRange;
@@ -135,16 +129,25 @@ pub fn BasedValue(comptime T: type) type {
             }
         }
 
-        /// Adds a column
-        pub fn AddColumn(column: []const T) !void {
+        /// Adds a row in a specified index, adter forward to the front
+        pub inline fn AddRow(row: []const T, rowIndex: usize) !void {
+            const adjRowIndex = @min(columns(), rowIndex);
+            const mutable = try arena.allocator().dupe(T, row);
+            try matrix.insert(adjRowIndex, mutable);
+        }
+
+        /// Adds a column in a specified index, after forward to the front
+        pub fn AddColumn(column: []const T, columnIndex: usize) !void {
             if (rows() != column.len) return error.UnmatchedScheme;
-            
+
+            const adjColumnIndex = @min(rows() - 1, columnIndex);
             const rowLength = columns();
 
-            for (column, 0..) |value, i| {
+            for (column, 0..) |item, i| {
                 const updated = try arena.allocator().alloc(T, rowLength + 1);
-                @memcpy(updated[0..rowLength], matrix.items[i]);
-                updated[rowLength] = value;
+                @memcpy(updated[0..adjColumnIndex], matrix.items[i][0..adjColumnIndex ]);
+                updated[adjColumnIndex] = item;
+                @memcpy(updated[adjColumnIndex+1..], matrix.items[i][adjColumnIndex..]);
                 matrix.items[i] = updated;
             }
         }
@@ -237,8 +240,9 @@ pub fn BasedValue(comptime T: type) type {
 
             Destroy();
             
-            for (num_rows) |_| { 
-                try AddRow(marray[i..i+num_columns]);
+            for (0..num_rows) |row| {
+                const slice = marray[i..i+num_columns];
+                try AddRow(slice, row);
                 i += num_columns;
             }
         }
