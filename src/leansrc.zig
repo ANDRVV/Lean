@@ -25,10 +25,28 @@ pub fn BasedValue(comptime T: type) type {
         pub inline fn size() usize { return matrix.items[0].len * matrix.items.len; }
         pub inline fn content() [][]T { return matrix.items; }
 
+        /// Print matrix as fast as possible
+        pub fn quickprint() !void {
+            const stdout = std.io.getStdOut().writer();
+            for (matrix.items) |row| {
+                try stdout.print("{any}\n", .{row});
+            }
+        }
+
+        /// Print matrix with customizable format
+        pub fn printf(comptime format: []const u8) !void {
+            const stdout = std.io.getStdOut().writer();
+            for (matrix.items) |row| {
+                for (row) |item| {
+                    try stdout.print(format, .{item});
+                }
+                try stdout.print("\n", .{});
+            }
+        }
+
         /// Set 2D Array
-        pub fn Set(comptime mat: []const []const T) !void {
-            const rowlen = mat[0].len;
-            for (mat[1..]) |slice| if (slice.len != rowlen) return error.WrongMatrixScheme;
+        pub fn Set(mat: []const []const T) !void {
+            for (mat[1..]) |slice| if (slice.len != mat[0].len) return error.WrongMatrixScheme;
 
             Destroy();
 
@@ -40,23 +58,34 @@ pub fn BasedValue(comptime T: type) type {
             }
         }
 
+        /// Set 2D Array from fill -> recommended use rescheme after
+        pub fn SetFill(value: T, repeat: usize) !void {
+            const marray = try arena.allocator().alloc(T, repeat);
+            @memset(marray, value);
+
+            try Set(&[_][]const T{ marray });
+        }
+
         /// Gets a value from index
-        pub fn Get(comptime column: usize, comptime row: usize) !T {
-            if (row >= rows() or column >= columns())
-                return error.GetItemNotFound;
+        pub fn Get(column: usize, row: usize) !T {
+            if (row >= rows() or column >= columns()) return error.GetItemNotFound;
             return matrix.items[row][column];
         }
 
         /// Join as a single list
         pub fn AsArray() ![]T {
+            if (size() < 1) return error.UnitializedMatrix;
+
             var marray = try arena.allocator().alloc(T, size());
             var i: usize = 0;
+
             for (matrix.items) |slice| {
                 for (slice) |value| {
                     marray[i] = value;
                     i += 1;
                 }
             }
+
             return marray;
         }
 
@@ -64,6 +93,46 @@ pub fn BasedValue(comptime T: type) type {
         pub inline fn AddRow(row: []const T) !void {
             const mutable = try arena.allocator().dupe(T, row);
             try matrix.append(mutable);
+        }
+
+        /// Change a specified row
+        pub fn ChangeRow(newRow: []const T, rowIndex: usize) !void {
+            if (rows() <= rowIndex or columns() != newRow.len) return error.RowOutOfRange;
+
+            const mutable = try arena.allocator().dupe(T, newRow);
+            try matrix.replaceRange(rowIndex, 1, &[_][] T{ mutable });
+        }
+
+        /// Change a specified column
+        pub inline fn ChangeColumn(newColumn: []const T, columnIndex: usize) !void {
+            if (rows() != newColumn.len or columns() <= columnIndex) return error.ColumnOutOfRange;
+
+            for (0..matrix.items.len) |rowIndex| {
+                matrix.items[rowIndex][columnIndex] = newColumn[rowIndex];
+            }
+        }
+
+        /// Remove a specified row
+        pub inline fn RemoveRow(rowIndex: usize) !void {
+            if (rows() <= rowIndex) return error.RowOutOfRange;
+
+            _ = matrix.orderedRemove(rowIndex);
+        }
+
+        /// Remove a specified column
+        pub fn RemoveColumn(columnIndex: usize) !void {
+            if (columns() <= columnIndex) return error.ColumnOutOfRange;
+            
+            var row = std.ArrayList(T).init(arena.allocator());
+            errdefer row.deinit();
+
+            for (0..matrix.items.len) |rowIndex| {
+                row.clearAndFree();
+                try row.appendSlice(matrix.items[rowIndex]);
+                _ = row.orderedRemove(columnIndex);
+
+                matrix.items[rowIndex] = try arena.allocator().dupe(T, row.items);
+            }
         }
 
         /// Adds a column
@@ -80,8 +149,16 @@ pub fn BasedValue(comptime T: type) type {
             }
         }
 
+        /// Change value in (x, y)
+        pub inline fn ChangeValue(value: usize, column: usize, row: usize) !void {
+            if (size() < 1) return error.UnitializedMatrix;
+            if (row >= rows() or column >= columns()) return error.UnmatchedScheme;
+
+            matrix.items[row][column] = value;
+        }
+
         /// Convert linear index as coordinates (x, y)
-        pub inline fn IndexAsCoordinates(comptime index: usize) ![2]usize {
+        pub inline fn IndexAsCoordinates(index: usize) ![2]usize {
             return .{index / columns(), index % columns()};
         }
 
@@ -141,7 +218,7 @@ pub fn BasedValue(comptime T: type) type {
         }
 
         /// Concatenate with another matrix
-        pub fn Insert(comptime mat: []const []const T) !void {
+        pub fn Insert(mat: []const []const T) !void {
             if (columns() != mat[0].len) return error.WrongMatrixScheme;
 
             for (mat) |row| {
@@ -151,15 +228,15 @@ pub fn BasedValue(comptime T: type) type {
         }
 
         /// Reshapes the matrix
-        pub fn Rescheme(comptime num_columns: usize, comptime num_rows: usize) !void {
+        pub fn Rescheme(num_columns: usize, num_rows: usize) !void {
             if (size() < 1) return error.UnitializedMatrix;
             if (size() != num_columns * num_rows) return error.UnmatchedScheme;
 
-            Destroy();
-            
             const marray = try AsArray();
             var i: usize = 0;
 
+            Destroy();
+            
             for (num_rows) |_| { 
                 try AddRow(marray[i..i+num_columns]);
                 i += num_columns;
@@ -167,7 +244,7 @@ pub fn BasedValue(comptime T: type) type {
         }
 
         /// Gets a column from index
-        pub fn GetColumn(comptime index: usize) ![]T {
+        pub fn GetColumn(index: usize) ![]T {
             if (index >= columns())
                 return error.ColumnOutOfRange;
             
@@ -177,7 +254,7 @@ pub fn BasedValue(comptime T: type) type {
         }
 
         /// Gets a row from index
-        pub fn GetRow(comptime index: usize) ![]T {
+        pub fn GetRow(index: usize) ![]T {
             return if (index >= rows()) error.RowOutOfRange else matrix.items[index];
         }
 
