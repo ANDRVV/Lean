@@ -131,6 +131,8 @@ pub fn BasedValue(comptime T: type) type {
 
         /// Adds a row in a specified index, adter forward to the front
         pub inline fn AddRow(row: []const T, rowIndex: usize) !void {
+            if (columns() != row.len and columns() != 0) return error.RowOutOfRange;
+
             const adjRowIndex = @min(columns(), rowIndex);
             const mutable = try arena.allocator().dupe(T, row);
             try matrix.insert(adjRowIndex, mutable);
@@ -138,17 +140,29 @@ pub fn BasedValue(comptime T: type) type {
 
         /// Adds a column in a specified index, after forward to the front
         pub fn AddColumn(column: []const T, columnIndex: usize) !void {
-            if (rows() != column.len) return error.UnmatchedScheme;
+            if (rows() != column.len and rows() != 0) return error.UnmatchedScheme;
 
-            const adjColumnIndex = @min(rows() - 1, columnIndex);
-            const rowLength = columns();
+            const rowLength = @max(columns(), 1);
+            const adjColumnIndex = if (rows() == 0) 0 else @min(rowLength, columnIndex);
+
+            if (adjColumnIndex == 0 and rows() == 0) {
+                for (column) |item| {
+                    const newRow = try arena.allocator().alloc(T, 1);
+                    newRow[0] = item;
+                    try matrix.append(newRow);
+                }
+                return;
+            }
 
             for (column, 0..) |item, i| {
                 const updated = try arena.allocator().alloc(T, rowLength + 1);
-                @memcpy(updated[0..adjColumnIndex], matrix.items[i][0..adjColumnIndex ]);
                 updated[adjColumnIndex] = item;
-                @memcpy(updated[adjColumnIndex+1..], matrix.items[i][adjColumnIndex..]);
+
+                if (adjColumnIndex > 0) @memcpy(updated[0..adjColumnIndex], matrix.items[i][0..adjColumnIndex]);
+                if (rows() != 1) @memcpy(updated[adjColumnIndex+1..], matrix.items[i][adjColumnIndex..]);
+
                 matrix.items[i] = updated;
+                
             }
         }
 
@@ -230,6 +244,16 @@ pub fn BasedValue(comptime T: type) type {
             }
         }
 
+        pub inline fn Transpose() !void {
+            const matrixCopy = try deepClone(arena.allocator(), T, matrix);
+
+            Destroy();
+
+            for (matrixCopy.items, 0..) |row, i| {
+                try AddColumn(row, i);
+            }
+        }
+
         /// Reshapes the matrix
         pub fn Rescheme(num_columns: usize, num_rows: usize) !void {
             if (size() < 1) return error.UnitializedMatrix;
@@ -274,4 +298,16 @@ pub fn BasedValue(comptime T: type) type {
             arena.deinit();
         }
     };
+}
+
+fn deepClone(allocator: std.mem.Allocator, comptime T: type, src: std.ArrayList([]T)) !std.ArrayListAligned([]T, null) {
+    var result = std.ArrayList([]T).init(allocator);
+    for (src.items) |row| {
+        const newRow = try allocator.alloc(T, row.len);
+        for (row, 0..) |item, i| {
+            newRow[i] = item;
+        }
+        try result.append(newRow);
+    }
+    return result;
 }
