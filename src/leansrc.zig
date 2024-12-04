@@ -290,8 +290,6 @@ pub fn BasedValue(comptime T: type) type {
             }
         }
 
-
-
         /// Reverse all or specified axis index
         pub fn Reverse(axis: Axis, index: ?usize) !void {
             if (index) |i| {
