@@ -5,3 +5,5 @@ pub const LeanErrors = leansource.LeanErrors;
 
 pub const Columns = leansource.Axis.Columns;
 pub const Rows = leansource.Axis.Rows;
+
+pub const Stats = leansource.Stats;
