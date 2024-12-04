@@ -205,22 +205,13 @@ pub fn BasedValue(comptime T: type) type {
                 switch (statType) {
                     Stats.Max => std.mem.indexOfMax(T, marray),
                     Stats.Min => std.mem.indexOfMin(T, marray),
-                    Stats.Med => {
-                        const sorted = try arena.allocator().dupe(T, marray);
-                        std.mem.sort(T, sorted, {}, comptime std.sort.asc(T));
-
-                        const mmid = marray[marray.len / 2];
-
-                        const value = if (marray.len % 2 == 1) mmid else (marray[marray.len / 2 - 1] + mmid) / 2;
-                        
-                        for (marray, 0..) |item, i| {
-                            if (item == value) {
-                                return i;
+                    Stats.Med => struct {
+                            fn f(value: f64, marray2: anytype) usize {
+                                for (marray2, 0..) |item, i| if (@as(f64, @floatFromInt(item)) == value) return i;
+                                unreachable; // if Stat() success, for loop success!
                             }
-                        }
-                        return 0;
-                    },
-                    else => error.StatNotAvailable,
+                        }.f(try Stat(statType, axis, index), marray),
+                    else => return error.StatNotAvailable,
                 }
             );
         }
@@ -240,7 +231,7 @@ pub fn BasedValue(comptime T: type) type {
                 Stats.Med => {
                     std.mem.sort(T, marray, {}, comptime std.sort.asc(T));
                     const mmid = @as(f64, @floatFromInt(marray[marray.len / 2]));
-                    
+
                     return if (marray.len % 2 == 1) mmid else (@as(f64, @floatFromInt(marray[marray.len / 2 - 1])) + mmid) / 2.0;
                 }
             };
@@ -298,6 +289,8 @@ pub fn BasedValue(comptime T: type) type {
                 }
             }
         }
+
+
 
         /// Reverse all or specified axis index
         pub fn Reverse(axis: Axis, index: ?usize) !void {
