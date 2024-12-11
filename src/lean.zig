@@ -7,3 +7,5 @@ pub const Columns = leansource.Axis.Columns;
 pub const Rows = leansource.Axis.Rows;
 
 pub const Stats = leansource.Stats;
+pub const Operations = leansource.Operations;
+pub const Devices = leansource.Devices;
