@@ -1,10 +1,11 @@
 const std = @import("std");
+const leanMath = @import("leanmath.zig");
+const stdlean = @import("common.zig");
 
 /// ArenaAllocator: fastest allocation for small allocations
 const ArenaAllocator = std.heap.ArenaAllocator; 
 
 pub const LeanErrors = error {
-    SetAllocationFailure,
     GetItemNotFound,
     WrongMatrixScheme,
     ColumnOutOfRange,
@@ -26,17 +27,55 @@ pub const Stats = enum(u2) {
     Med
 };
 
+pub const Operations = enum(u3) {
+    Add,
+    Sub,
+    Mul,
+    Div
+};
+
+pub const Devices = enum(u3) {
+    CPU,
+    GPU,
+    CUDA
+};
+
 /// Use Lean on custom numeric type
 pub fn BasedValue(comptime T: type) type {
     return struct {
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         var matrix = std.ArrayList([]T).init(arena.allocator());
 
+        var device: type = leanMath.CPUComputing(arena, T);
+
         pub inline fn rows() usize { return matrix.items.len; }
         pub inline fn columns() usize { return if (rows() > 0) matrix.items[0].len else 0; }
         pub inline fn scheme() [2]usize { return .{columns(), rows()}; }
         pub inline fn size() usize { return columns() * rows(); }
         pub inline fn content() [][]T { return matrix.items; }
+
+        /// Change device that does the calculations
+        pub inline fn ChangeDevice(computingDevice: Devices) void { 
+            device = switch (computingDevice) { 
+                Devices.CPU => leanMath.CPUComputing(arena, T),
+                Devices.GPU => leanMath.GPUComputing(arena, T),
+                Devices.CUDA => leanMath.CUDAComputing(arena, T),
+            };
+        }
+
+        /// Make a calculation with another matrix: the result can available on this matrix
+        pub inline fn Calc(op: Operations, mat: []const []const T) !void {
+            matrix.items = try ReturnCalc(op, mat);
+        }
+
+        pub inline fn ReturnCalc(op: Operations, mat: []const []const T) ![][]T {
+            return try switch (op) {
+                Operations.Add => device.Add(content(), mat),
+                Operations.Sub => device.Sub(content(), mat),
+                Operations.Mul => device.Mul(content(), mat),
+                Operations.Div => device.Div(content(), mat),
+            };
+        }
 
         /// Print matrix as fast as possible
         pub fn quickprint() !void {
@@ -67,7 +106,7 @@ pub fn BasedValue(comptime T: type) type {
 
             for (mat) |slice| {
                 const newRow = try arena.allocator().dupe(T, slice);
-                matrix.append(newRow) catch return error.SetAllocationFailure;
+                try matrix.append(newRow);
             }
         }
 
@@ -181,6 +220,17 @@ pub fn BasedValue(comptime T: type) type {
                     try matrix.insert(adjRowIndex, mutable);
                 },
             }
+        }
+
+        /// Gets a piece of matrix, from (x, y) to (x, y)
+        pub fn GetSection(fromX: usize, fromY: usize, toX: usize, toY: usize) ![][]T {
+            const section = try arena.allocator().alloc([]T, toY - fromY);
+    
+            for (0..toY - fromY, section) |i, *row| {
+                row.* = try arena.allocator().dupe(T, matrix[fromY + i][fromX..toX]);
+            }
+            
+            return section;
         }
 
         /// Change value in (x, y)
@@ -309,9 +359,10 @@ pub fn BasedValue(comptime T: type) type {
                 }
             }
         }
+        
         /// Transpose matrix
         pub fn Transpose() !void {
-            const matrixCopy = try deepClone(arena.allocator(), T, matrix);
+            const matrixCopy = try stdlean.DeepClone(arena.allocator(), T, matrix);
 
             Destroy();
 
