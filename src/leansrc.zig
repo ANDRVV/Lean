@@ -367,15 +367,3 @@ pub fn BasedValue(comptime T: type) type {
         }
     };
 }
-
-fn deepClone(allocator: std.mem.Allocator, comptime T: type, src: std.ArrayList([]T)) !std.ArrayListAligned([]T, null) {
-    var result = std.ArrayList([]T).init(allocator);
-    for (src.items) |row| {
-        const newRow = try allocator.alloc(T, row.len);
-        for (row, 0..) |item, i| {
-            newRow[i] = item;
-        }
-        try result.append(newRow);
-    }
-    return result;
-}
