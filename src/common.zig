@@ -16,10 +16,8 @@ pub fn DeepClone(
     return result;
 }
 
-pub inline fn EqualCheck(
-    T: type,
-    mat1: []const []const T,
-    mat2: []const []const T
-) bool {
-    return mat1.len == mat2.len and mat1[0].len == mat2[0].len;
+pub fn GetOptimalCapacity(cap: usize) usize {
+    var new: usize = cap;
+    while (new <= cap) new +|= new / 2 + 8;
+    return new;
 }
