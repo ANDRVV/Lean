@@ -27,17 +27,18 @@ pub const Stats = enum(u2) {
     Med
 };
 
-pub const Operations = enum(u3) {
+pub const Operations = enum(u2) {
     Add,
     Sub,
     Mul,
     Div
 };
 
-pub const Devices = enum(u3) {
-    CPU,
-    GPU,
-    CUDA
+pub const Devices = enum(u1) {
+    SafeCPU,
+    FastCPU,
+    //SafeGPU,
+    //FastGPU
 };
 
 /// Use Lean on custom numeric type
