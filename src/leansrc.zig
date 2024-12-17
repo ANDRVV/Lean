@@ -1,5 +1,5 @@
 const std = @import("std");
-const leanMath = @import("leanmath.zig");
+const compdev = @import("compmath.zig");
 const stdlean = @import("common.zig");
 
 /// ArenaAllocator: fastest allocation for small allocations
