@@ -44,52 +44,62 @@ pub const Devices = enum(u1) {
 /// Use Lean on custom numeric type
 pub fn BasedValue(comptime T: type) type {
     return struct {
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-        var matrix = std.ArrayList([]T).init(arena.allocator());
+        const Self = @This();
 
-        var device: type = leanMath.CPUComputing(arena, T);
+        matrix: std.ArrayList([]T),
+        allocator: std.mem.Allocator,
+        device: Devices,
 
-        pub inline fn rows() usize { return matrix.items.len; }
-        pub inline fn columns() usize { return if (rows() > 0) matrix.items[0].len else 0; }
-        pub inline fn scheme() [2]usize { return .{columns(), rows()}; }
-        pub inline fn size() usize { return columns() * rows(); }
-        pub inline fn content() [][]T { return matrix.items; }
-
-        /// Change device that does the calculations
-        pub inline fn ChangeDevice(computingDevice: Devices) void { 
-            device = switch (computingDevice) { 
-                Devices.CPU => leanMath.CPUComputing(arena, T),
-                Devices.GPU => leanMath.GPUComputing(arena, T),
-                Devices.CUDA => leanMath.CUDAComputing(arena, T),
+        /// Initialize Lean with allocator, device (optional) and capacity (number of rows).
+        /// Capacity WON'T optimized. Otherwise, with optimization, use initCapacity().
+        pub fn initCapacityPrecise(allocator: std.mem.Allocator, device: ?Devices, cap: usize) !Self {
+            return Self {
+                .allocator = allocator,
+                .matrix = try std.ArrayList([]T).initCapacity(
+                    allocator,
+                    @max(cap, 1)
+                ),
+                .device = device orelse Devices.SafeCPU,
             };
         }
 
-        /// Make a calculation with another matrix: the result can available on this matrix
-        pub inline fn Calc(op: Operations, mat: []const []const T) !void {
-            matrix.items = try ReturnCalc(op, mat);
+        /// Initialize Lean with allocator, device (optional) and capacity (number of rows).
+        /// Capacity will changed with GetOptimalCapacity(). Otherwise use initCapacityPrecise().
+        pub fn initCapacity(allocator: std.mem.Allocator, device: ?Devices, cap: usize) !Self {
+            return try initCapacityPrecise(
+                allocator,
+                device,
+                stdlean.GetOptimalCapacity(cap)
+            );
         }
 
-        pub inline fn ReturnCalc(op: Operations, mat: []const []const T) ![][]T {
-            return try switch (op) {
-                Operations.Add => device.Add(content(), mat),
-                Operations.Sub => device.Sub(content(), mat),
-                Operations.Mul => device.Mul(content(), mat),
-                Operations.Div => device.Div(content(), mat),
+        /// Initialize Lean with allocator and device (optional) with dynamic capacity
+        pub fn init(allocator: std.mem.Allocator, device: ?Devices) Self {
+            return Self {
+                .allocator = allocator,
+                .matrix = std.ArrayList([]T).init(allocator),
+                .device = device orelse Devices.SafeCPU,
             };
         }
+
+        pub inline fn rows(self: *Self) usize { return self.matrix.items.len; }
+        pub inline fn columns(self: *Self) usize { return if (self.rows() > 0) self.matrix.items[0].len else 0; }
+        pub inline fn scheme(self: *Self) [2]usize { return .{self.columns(), self.rows()}; }
+        pub inline fn size(self: *Self) usize { return self.columns() * self.rows(); }
+        pub inline fn content(self: *Self) [][]T { return self.matrix.items; }
 
         /// Print matrix as fast as possible
-        pub fn quickprint() !void {
+        pub fn quickprint(self: *Self) !void {
             const stdout = std.io.getStdOut().writer();
-            for (matrix.items) |row| {
+            for (self.matrix) |row| {
                 try stdout.print("{any}\n", .{row});
             }
         }
 
         /// Print matrix with customizable format
-        pub fn printf(comptime format: []const u8) !void {
+        pub fn printf(self: *Self, comptime format: []const u8) !void {
             const stdout = std.io.getStdOut().writer();
-            for (matrix.items) |row| {
+            for (self.matrix) |row| {
                 for (row) |item| {
                     try stdout.print(format, .{item});
                 }
@@ -97,160 +107,200 @@ pub fn BasedValue(comptime T: type) type {
             }
         }
 
+        /// Make a calculation with another matrix: the result can available on this matrix
+        pub inline fn Calc(self: *Self, op: Operations, mat: []const []const T) !void {
+            self.matrix.items = try self.ReturnCalc(op, mat);
+        }
+
+        /// Make a calculation with another matrix: the result is return of this function
+        pub inline fn ReturnCalc(self: *Self, op: Operations, mat: []const []const T) ![][]T {
+            return switch (self.device) {
+                Devices.SafeCPU => compdev.CPUProc(
+                    T,
+                    op,
+                    true,
+                    self.allocator,
+                    self.content(),
+                    mat
+                ),
+                Devices.FastCPU => compdev.CPUProc(
+                    T,
+                    op,
+                    false,
+                    self.allocator,
+                    self.content(),
+                    mat
+                )
+            };
+        }
+
         /// Set 2D Array
-        pub fn Set(mat: []const []const T) !void {
+        pub fn Set(self: *Self, mat: []const []const T) !void {
             for (mat[1..]) |slice| if (slice.len != mat[0].len) return error.WrongMatrixScheme;
-
-            Destroy();
-
-            try matrix.ensureTotalCapacity(mat.len);
+            
+            self.Destroy();
+            try self.matrix.ensureTotalCapacity(mat.len);
 
             for (mat) |slice| {
-                const newRow = try arena.allocator().dupe(T, slice);
-                try matrix.append(newRow);
+                const newRow = try self.allocator.dupe(T, slice);
+                try self.matrix.append(newRow);
             }
         }
 
         /// Set 2D Array from fill -> recommended use rescheme after
-        pub fn SetFill(value: T, repeat: usize) !void {
-            const marray = try arena.allocator().alloc(T, repeat);
+        pub fn SetFill(self: *Self, value: T, repeat: usize) !void {
+            const marray = try self.allocator.alloc(T, repeat);
             @memset(marray, value);
 
-            try Set(&[_][]const T{ marray });
+            try self.Set(&[_][]const T{ marray });
+        }
+
+        /// Set 2D Array from fill with random numbers -> recommended use rescheme after
+        pub fn SetFillRandom(self: *Self, from: T, to: T, repeat: usize) !void {
+            const marray = try self.allocator.alloc(T, repeat);
+            
+            var prng = std.rand.DefaultPrng.init(std.crypto.random.int(T));
+            const random = prng.random();
+
+            for (0..repeat) |i| {
+                marray[i] = random.intRangeAtMost(T, from, to);
+            }
+
+            try self.Set(&[_][]const T{ marray });
         }
 
         /// Gets a value from index
-        pub fn Get(column: usize, row: usize) !T {
-            if (row >= rows() or column >= columns()) return error.GetItemNotFound;
-            return matrix.items[row][column];
+        pub fn Get(self: *Self, column: usize, row: usize) !T {
+            if (row >= self.rows() or column >= self.columns()) return error.GetItemNotFound;
+            return self.matrix.items[row][column];
         }
 
         /// Change a specified row/column
-        pub fn ChangeAxis(axis: Axis, newAxis: []const T, axisIndex: usize) !void {
+        pub fn ChangeAxis(self: *Self, axis: Axis, newAxis: []const T, axisIndex: usize) !void {
             switch (axis) {
                 Axis.Columns => {
-                    if (rows() != newAxis.len or columns() <= axisIndex) return error.ColumnOutOfRange;
+                    if (self.rows() != newAxis.len or self.columns() <= axisIndex) return error.ColumnOutOfRange;
 
-                    for (0..matrix.items.len) |rowIndex| {
-                        matrix.items[rowIndex][axisIndex] = newAxis[rowIndex];
+                    for (0..self.matrix.items.len) |rowIndex| {
+                        self.matrix.items[rowIndex][axisIndex] = newAxis[rowIndex];
                     }
                 },
                 Axis.Rows => {
-                    if (columns() != newAxis.len or rows() <= axisIndex) return error.RowOutOfRange;
+                    if (self.columns() != newAxis.len or self.rows() <= axisIndex) return error.RowOutOfRange;
 
-                    const mutable = try arena.allocator().dupe(T, newAxis);
-                    try matrix.replaceRange(axisIndex, 1, &[_][] T{ mutable });
+                    const mutable = try self.allocator.dupe(T, newAxis);
+                    try self.matrix.replaceRange(axisIndex, 1, &[_][] T{ mutable });
                 },
             }
         }
 
         /// Gets a column/row from index
-        pub fn GetAxis(axis: Axis, index: usize) ![]T {
+        pub fn GetAxis(self: *Self, axis: Axis, index: usize) ![]T {
             switch (axis) {
                 Axis.Columns => {
-                    if (index >= columns()) return error.ColumnOutOfRange;
+                    if (index >= self.columns()) return error.ColumnOutOfRange;
                     
-                    var column = try arena.allocator().alloc(T, rows());
-                    for (matrix.items, 0..) |slice, i| column[i] = slice[index];
+                    var column = try self.allocator.alloc(T, self.rows());
+                    for (self.matrix.items, 0..) |slice, i| column[i] = slice[index];
 
                     return column;
                 },
-                Axis.Rows => return if (index >= rows()) error.RowOutOfRange else matrix.items[index],
+                Axis.Rows => return if (index >= self.rows()) error.RowOutOfRange else self.matrix.items[index],
             }
         }
 
         /// Remove a specified row/column
-        pub inline fn RemoveAxis(axis: Axis, axisIndex: usize) !void {
+        pub fn RemoveAxis(self: *Self, axis: Axis, axisIndex: usize) !void {
             switch (axis) {
                 Axis.Rows => {
-                    if (rows() <= axisIndex) return error.RowOutOfRange;
+                    if (self.rows() <= axisIndex) return error.RowOutOfRange;
 
-                    _ = matrix.orderedRemove(axisIndex);
+                    _ = self.matrix.orderedRemove(axisIndex);
                 },
                 Axis.Columns => {
-                    if (columns() <= axisIndex) return error.ColumnOutOfRange;
-            
-                    var row = std.ArrayList(T).init(arena.allocator());
+                    if (self.columns() <= axisIndex) return error.ColumnOutOfRange;
+
+                    var row = std.ArrayList(T).init(self.allocator);
                     errdefer row.deinit();
 
-                    for (0..matrix.items.len) |rowIndex| {
+                    for (0..self.matrix.items.len) |rowIndex| {
                         row.clearAndFree();
-                        try row.appendSlice(matrix.items[rowIndex]);
+                        try row.appendSlice(self.matrix.items[rowIndex]);
                         _ = row.orderedRemove(axisIndex);
 
-                        matrix.items[rowIndex] = try arena.allocator().dupe(T, row.items);
+                        self.matrix.items[rowIndex] = try self.allocator.dupe(T, row.items);
                     }
                 }
             }
         }
 
         /// Adds a row in a specified index, adter forward to the front
-        pub fn AddAxis(axis: Axis, axisContent: []const T, axisIndex: usize) !void {
+        pub fn AddAxis(self: *Self, axis: Axis, axisContent: []const T, axisIndex: usize) !void {
             switch (axis) {
                 Axis.Columns => {
-                    if (rows() != axisContent.len and rows() != 0) return error.UnmatchedScheme;
+                    if (self.rows() != axisContent.len and self.rows() != 0) return error.UnmatchedScheme;
 
-                    const rowLength = @max(columns(), 1);
-                    const adjColumnIndex = if (rows() == 0) 0 else @min(rowLength, axisIndex);
+                    const rowLength = @max(self.columns(), 1);
+                    const adjColumnIndex = if (self.rows() == 0) 0 else @min(rowLength, axisIndex);
 
-                    if (adjColumnIndex == 0 and rows() == 0) {
+                    if (adjColumnIndex == 0 and self.rows() == 0) {
                         for (axisContent) |item| {
-                            const newRow = try arena.allocator().alloc(T, 1);
+                            const newRow = try self.allocator.alloc(T, 1);
                             newRow[0] = item;
-                            try matrix.append(newRow);
+                            try self.matrix.append(newRow);
                         }
                         return;
                     }
 
                     for (axisContent, 0..) |item, i| {
-                        const updated = try arena.allocator().alloc(T, rowLength + 1);
+                        const updated = try self.allocator.alloc(T, rowLength + 1);
                         updated[adjColumnIndex] = item;
 
-                        if (adjColumnIndex > 0) @memcpy(updated[0..adjColumnIndex], matrix.items[i][0..adjColumnIndex]);
-                        if (rows() != 1) @memcpy(updated[adjColumnIndex + 1..], matrix.items[i][adjColumnIndex..]);
+                        if (adjColumnIndex > 0) @memcpy(updated[0..adjColumnIndex], self.matrix.items[i][0..adjColumnIndex]);
+                        if (self. self.rows() != 1) @memcpy(updated[adjColumnIndex + 1..], self.matrix.items[i][adjColumnIndex..]);
 
-                        matrix.items[i] = updated;
+                        self.matrix.items[i] = updated;
                         
                     }
                 },
                 Axis.Rows => {
-                    if (columns() != axisContent.len and columns() != 0) return error.RowOutOfRange;
+                    if (self.columns() != axisContent.len and self.columns() != 0) return error.RowOutOfRange;
 
-                    const adjRowIndex = @min(columns(), axisIndex);
-                    const mutable = try arena.allocator().dupe(T, axisContent);
-                    try matrix.insert(adjRowIndex, mutable);
+                    const adjRowIndex = @min(self.columns(), axisIndex);
+                    const mutable = try self.allocator.dupe(T, axisContent);
+                    try self.matrix.insert(adjRowIndex, mutable);
                 },
             }
         }
 
         /// Gets a piece of matrix, from (x, y) to (x, y)
-        pub fn GetSection(fromX: usize, fromY: usize, toX: usize, toY: usize) ![][]T {
-            const section = try arena.allocator().alloc([]T, toY - fromY);
+        pub fn GetSection(self: *Self, fromX: usize, fromY: usize, toX: usize, toY: usize) ![][]T {
+            const section = try self.allocator.alloc([]T, toY - fromY);
     
             for (0..toY - fromY, section) |i, *row| {
-                row.* = try arena.allocator().dupe(T, matrix[fromY + i][fromX..toX]);
+                row.* = try self.allocator.dupe(T, self.matrix[fromY + i][fromX..toX]);
             }
             
             return section;
         }
 
         /// Change value in (x, y)
-        pub inline fn ChangeValue(value: usize, column: usize, row: usize) !void {
-            if (size() < 1) return error.UnitializedMatrix;
-            if (row >= rows() or column >= columns()) return error.UnmatchedScheme;
+        pub inline fn ChangeValue(self: *Self, value: usize, column: usize, row: usize) !void {
+            if (self.size() < 1) return error.UnitializedMatrix;
+            if (row >= self.rows() or column >= self.columns()) return error.UnmatchedScheme;
 
-            matrix.items[row][column] = value;
+            self.matrix.items[row][column] = value;
         }
 
         /// Convert linear index as coordinates (x, y)
-        pub inline fn IndexAsCoordinates(index: usize) ![2]usize {
-            return .{index / columns(), index % columns()};
+        pub inline fn IndexAsCoordinates(self: *Self, index: usize) ![2]usize {
+            return .{index / self.columns(), index % self.columns()};
         }
 
         /// Gets coordinates (x, y) from stat in a specified column/row 
         /// avg stat not available (Stats.Avg)
-        pub fn StatCoordinates(statType: Stats, axis: ?Axis, index: ?usize) ![2]usize {
-            const marray = if (axis == null or index == null) try AsArray() else try GetAxis(axis.?, index.?);
+        pub fn StatCoordinates(self: *Self, statType: Stats, axis: ?Axis, index: ?usize) ![2]usize {
+            const marray = if (axis == null or index == null) try self.AsArray() else try self.GetAxis(axis.?, index.?);
 
             return IndexAsCoordinates(
                 switch (statType) {
@@ -259,17 +309,17 @@ pub fn BasedValue(comptime T: type) type {
                     Stats.Med => struct {
                             fn f(value: f64, marray2: anytype) usize {
                                 for (marray2, 0..) |item, i| if (@as(f64, @floatFromInt(item)) == value) return i;
-                                unreachable; // if Stat() success, for loop success!
+                                @panic("Median not available.");
                             }
-                        }.f(try Stat(statType, axis, index), marray),
+                        }.f(try self.Stat(statType, axis, index), marray),
                     else => return error.StatNotAvailable,
                 }
             );
         }
 
         /// Gets value from stat in a specified column/row
-        pub fn Stat(statType: Stats, axis: ?Axis, index: ?usize) !f64 {
-            const marray = if (axis == null or index == null) try AsArray() else try GetAxis(axis.?, index.?);
+        pub fn Stat(self: *Self, statType: Stats, axis: ?Axis, index: ?usize) !f64 {
+            const marray = if (axis == null or index == null) try self.AsArray() else try self.GetAxis(axis.?, index.?);
 
             return switch (statType) {
                 Stats.Max => @floatFromInt(std.mem.max(T, marray)),
@@ -289,8 +339,8 @@ pub fn BasedValue(comptime T: type) type {
         }
 
         /// Return the sum of all values
-        pub inline fn Sum() !usize {
-            return Map( 
+        pub inline fn Sum(self: *Self) !usize {
+            return self.Map( 
                 struct {
                     fn f(a: usize, b: usize) usize { return a + b; }
                 }.f
@@ -298,8 +348,8 @@ pub fn BasedValue(comptime T: type) type {
         }
 
         /// Return the product of all values
-        pub inline fn Prod() !usize {
-            return Map( 
+        pub inline fn Prod(self: *Self) !usize {
+            return self.Map( 
                 struct {
                     fn f(a: usize, b: usize) usize { return a * b; }
                 }.f
@@ -307,96 +357,96 @@ pub fn BasedValue(comptime T: type) type {
         }
 
         /// Return the result of all operations among all values
-        pub fn Map(transformer: fn (usize, usize) usize) !usize {
-            const marray = try AsArray();
+        pub fn Map(self: *Self, opfunc: fn (usize, usize) usize) !usize {
+            const marray = try self.AsArray();
             
             var res: usize = 0;
             for (marray) |value| {
-                res = transformer(res, value);
+                res = opfunc(res, value);
             }
             return res;
         }
 
         /// Concatenate with another matrix
-        pub fn Insert(mat: []const []const T) !void {
-            if (columns() != mat[0].len) return error.WrongMatrixScheme;
+        pub fn Insert(self: *Self, mat: []const []const T) !void {
+            if (self.columns() != mat[0].len) return error.WrongMatrixScheme;
 
             for (mat) |row| {
-                const mutable = try arena.allocator().dupe(T, row);
-                try matrix.append(mutable);
+                const mutable = try self.allocator.dupe(T, row);
+                try self.matrix.append(mutable);
             }
         }
 
         /// Private function: reverse an axis of matrix
-        fn reverseAxis(axis: Axis, idx: usize) !void {
+        fn reverseAxis(self: *Self, axis: Axis, idx: usize) !void {
             switch (axis) {
                 Axis.Columns => {
-                    const column = try GetAxis(Axis.Columns, idx);
+                    const column = try self.GetAxis(Axis.Columns, idx);
                     std.mem.reverse(T, column);
-                    try ChangeAxis(Axis.Columns, column, idx);
+                    try self.ChangeAxis(Axis.Columns, column, idx);
                 },
                 Axis.Rows => {
-                    std.mem.reverse(T, matrix.items[idx]);
+                    std.mem.reverse(T, self.matrix.items[idx]);
                 }
             }
         }
 
         /// Reverse all or specified axis index
-        pub fn Reverse(axis: Axis, index: ?usize) !void {
+        pub fn Reverse(self: *Self, axis: Axis, index: ?usize) !void {
             if (index) |i| {
                 switch (axis) {
-                    Axis.Columns => if (i >= columns()) return error.ColumnOutOfRange,
-                    Axis.Rows => if (i >= rows()) return error.RowOutOfRange,
+                    Axis.Columns => if (i >= self.columns()) return error.ColumnOutOfRange,
+                    Axis.Rows => if (i >= self.rows()) return error.RowOutOfRange,
                 }
-                try reverseAxis(axis, i);
+                try self.reverseAxis(axis, i);
             } else {
                 const limit = switch (axis) {
-                    Axis.Columns => columns(),
-                    Axis.Rows => rows(),
+                    Axis.Columns => self.columns(),
+                    Axis.Rows => self.rows(),
                 };
 
                 for (0..limit) |i| {
-                    try reverseAxis(axis, i);
+                    try self.reverseAxis(axis, i);
                 }
             }
         }
         
         /// Transpose matrix
-        pub fn Transpose() !void {
-            const matrixCopy = try stdlean.DeepClone(arena.allocator(), T, matrix);
+        pub fn Transpose(self: *Self) !void {
+            const matrixCopy = try stdlean.DeepClone(self.allocator, T, self.matrix);
 
-            Destroy();
+            self.Destroy();
 
             for (matrixCopy.items, 0..) |row, i| {
-                try AddAxis(Axis.Columns, row, i);
+                try self.AddAxis(Axis.Columns, row, i);
             }
         }
 
         /// Reshapes the matrix
-        pub fn Rescheme(num_columns: usize, num_rows: usize) !void {
-            if (size() < 1) return error.UnitializedMatrix;
-            if (size() != num_columns * num_rows) return error.UnmatchedScheme;
+        pub fn Rescheme(self: *Self, num_columns: usize, num_rows: usize) !void {
+            if (self.size() < 1) return error.UnitializedMatrix;
+            if (self.size() != num_columns * num_rows) return error.UnmatchedScheme;
 
-            const marray = try AsArray();
+            const marray = try self.AsArray();
             var i: usize = 0;
 
-            Destroy();
+            self.Destroy();
             
             for (0..num_rows) |row| {
                 const slice = marray[i..i+num_columns];
-                try AddAxis(Axis.Rows, slice, row);
+                try self.AddAxis(Axis.Rows, slice, row);
                 i += num_columns;
             }
         }
 
         /// Join as a single list
-        pub fn AsArray() ![]T {
-            if (size() < 1) return error.UnitializedMatrix;
+        pub fn AsArray(self: *Self) ![]T {
+            if (self.size() < 1) return error.UnitializedMatrix;
 
-            var marray = try arena.allocator().alloc(T, size());
+            var marray = try self.allocator.alloc(T, self.size());
             var i: usize = 0;
 
-            for (matrix.items) |slice| {
+            for (self.matrix.items) |slice| {
                 for (slice) |value| {
                     marray[i] = value;
                     i += 1;
@@ -407,15 +457,14 @@ pub fn BasedValue(comptime T: type) type {
         }
 
         /// Free matrix
-        pub fn Destroy() void {
-            for (matrix.items) |row| arena.allocator().free(row);
-            matrix.clearAndFree();
+        pub inline fn Destroy(self: *Self) void {
+            for (self.matrix.items) |row| self.allocator.free(row);
+            self.matrix.clearAndFree();
         }
 
         /// Deinit matrix
-        pub fn Deinit() void {
-            matrix.deinit();
-            arena.deinit();
+        pub inline fn deinit(self: Self) void {
+            self.matrix.deinit();
         }
     };
 }
