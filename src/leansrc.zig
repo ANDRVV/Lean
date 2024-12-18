@@ -2,40 +2,64 @@ const std = @import("std");
 const compdev = @import("compmath.zig");
 const stdlean = @import("common.zig");
 
-/// ArenaAllocator: fastest allocation for small allocations
-const ArenaAllocator = std.heap.ArenaAllocator; 
-
+/// LeanErrors is a collection of errors that can be returned by Lean's functions.
 pub const LeanErrors = error {
-    GetItemNotFound,
+    /// `WrongMatrixScheme`: the matrix layout is incorrect, for example a odd matrix.
     WrongMatrixScheme,
+    /// `ColumnOutOfRange` is returned when the column index is out of range.
     ColumnOutOfRange,
+    /// `RowOutOfRange` is returned when the row index is out of range.
     RowOutOfRange,
+    /// `UnitializedMatrix` is returned when the matrix is not initialized.
     UnitializedMatrix,
+    /// `UnmatchedScheme` is returned when the matrix scheme is not matched.
     UnmatchedScheme,
-    StatNotAvailable,
+    /// `StatNotAvailable` is returned when the requested statistic method is not supported.
+    StatNotAvailable
 };
 
+/// Axis is a common input value on Lean's functions.
+/// It can be used to specify the axis of a matrix.
 pub const Axis = enum(u1) {
+    /// `Columns`: the axis is the columns (y).
     Columns,
+    /// `Rows`: the axis is the rows (x).
     Rows
 };
 
+/// Used for Stat() and StatCoordinates() functions.
+/// It can be used to specify the statistic method.
 pub const Stats = enum(u2) {
+    /// `Max`: the maximum value.
     Max,
+    /// `Min`: the minimum value.
     Min,
+    /// `Avg`: the average value.
     Avg,
+    /// `Med`: the median value.
     Med
 };
 
+/// For computing you can specify the operation.
 pub const Operations = enum(u2) {
+    /// `Add`: addition.
     Add,
+    /// `Sub`: subtraction.
     Sub,
+    /// `Mul`: multiplication.
     Mul,
+    /// `Div`: division.
     Div
 };
 
+/// Used for the selection of the computing device.
+/// Devices has a division for CPU, GPU and the modality:
+/// - `Safe`: the safe mode is slower, it make anti-overflow checks.
+/// - `Fast`: the fastest computing method with wrapping operations (no-overflow).
 pub const Devices = enum(u1) {
+    /// `SafeCPU`: the safe mode for CPU.
     SafeCPU,
+    /// `FastCPU`: the fast mode for CPU.
     FastCPU,
     //SafeGPU,
     //FastGPU
@@ -73,7 +97,7 @@ pub fn BasedValue(comptime T: type) type {
             );
         }
 
-        /// Initialize Lean with allocator and device (optional) with dynamic capacity
+        /// Initialize Lean with allocator and device (optional) with dynamic capacity.
         pub fn init(allocator: std.mem.Allocator, device: ?Devices) Self {
             return Self {
                 .allocator = allocator,
@@ -82,15 +106,20 @@ pub fn BasedValue(comptime T: type) type {
             };
         }
 
+        /// Return the number of rows of the matrix.
         pub inline fn rows(self: *Self) usize { return self.matrix.items.len; }
+        /// Return the number of columns of the matrix.
         pub inline fn columns(self: *Self) usize { return if (self.rows() > 0) self.matrix.items[0].len else 0; }
+        /// Return the number of columns and rows of the matrix.
         pub inline fn scheme(self: *Self) [2]usize { return .{self.columns(), self.rows()}; }
+        /// Return the total number of elements in the matrix.
         pub inline fn size(self: *Self) usize { return self.columns() * self.rows(); }
+        /// Return the matrix content as 2D array.
         pub inline fn content(self: *Self) [][]T { return self.matrix.items; }
 
         /// Print matrix as fast as possible
         pub fn quickprint(self: *Self) !void {
-            const stdout = std.io.getStdOut().writer();
+            const stdout = std.io.getStdErr().writer();
             for (self.matrix) |row| {
                 try stdout.print("{any}\n", .{row});
             }
@@ -169,9 +198,14 @@ pub fn BasedValue(comptime T: type) type {
             try self.Set(&[_][]const T{ marray });
         }
 
+        //pub fn SetFillRule(repeat: usize) !void {
+        //    
+        //}
+
         /// Gets a value from index
         pub fn Get(self: *Self, column: usize, row: usize) !T {
-            if (row >= self.rows() or column >= self.columns()) return error.GetItemNotFound;
+            if (row >= self.rows()) return error.RowOutOfRange;
+            if (column >= self.columns()) return error.ColumnOutOfRange;
             return self.matrix.items[row][column];
         }
 
