@@ -9,13 +9,15 @@ pub const LeanErrors = error {
     /// `ColumnOutOfRange` is returned when the column index is out of range.
     ColumnOutOfRange,
     /// `RowOutOfRange` is returned when the row index is out of range.
-    RowOutOfRange,
+    RowOutOfRange, 
     /// `UnitializedMatrix` is returned when the matrix is not initialized.
     UnitializedMatrix,
     /// `UnmatchedScheme` is returned when the matrix scheme is not matched.
     UnmatchedScheme,
     /// `StatNotAvailable` is returned when the requested statistic method is not supported.
-    StatNotAvailable
+    StatNotAvailable,
+    /// `UnknownDevice` is returned when the calculation device is not supported or non-existent.
+    UnknownDevice
 };
 
 /// Axis is a common input value on Lean's functions.
@@ -53,56 +55,70 @@ pub const Operations = enum(u2) {
 };
 
 /// Used for the selection of the computing device.
-/// Devices has a division for CPU, GPU and the modality:
+/// Devices has a division for Single Threaded CPU, Multi Threaded CPU and the modality:
 /// - `Safe`: the safe mode is slower, it make anti-overflow checks.
 /// - `Fast`: the fastest computing method with wrapping operations (no-overflow).
-pub const Devices = enum(u1) {
-    /// `SafeCPU`: the safe mode for CPU.
-    SafeCPU,
-    /// `FastCPU`: the fast mode for CPU.
-    FastCPU,
-    //SafeGPU,
-    //FastGPU
+/// - `Fixed`: the fixed mode check an overflow error, if there is an error return unchanged value.
+
+pub const Devices = union(enum) {
+    SingleThreaded: enum(u3) {
+        /// `SafeCPU`: the safe mode for Single Threaded CPU.
+        SafeCPU,
+
+        /// `FastCPU`: the fast mode for Single Threaded CPU.
+        FastCPU,
+
+        /// `FastCPU`: the fixed mode for Single Threaded CPU.
+        FixedCPU,
+    },
+
+    MultiThreaded: enum(u3) { 
+        /// `SafeCPU`: the safe mode for Multi Threaded CPU.
+        SafeCPU,
+
+        /// `FastCPU`: the fast mode for Multi Threaded CPU.
+        FastCPU,
+
+        /// `FastCPU`: the fixed mode for Multi Threaded CPU.
+        FixedCPU,
+    },
 };
 
 /// Use Lean on custom numeric type
-pub fn BasedValue(comptime T: type) type {
+pub fn BasedValue(comptime T: type, comptime compdevice: ?Devices) type {
     return struct {
         const Self = @This();
+        const device: Devices = compdevice orelse Devices.SingleThreaded.SafeCPU;
 
         matrix: std.ArrayList([]T),
         allocator: std.mem.Allocator,
-        device: Devices,
 
         /// Initialize Lean with allocator, device (optional) and capacity (number of rows).
         /// Capacity WON'T optimized. Otherwise, with optimization, use initCapacity().
-        pub fn initCapacityPrecise(allocator: std.mem.Allocator, device: ?Devices, cap: usize) !Self {
+        pub fn initCapacityPrecise(allocator: std.mem.Allocator, cap: usize) !Self {
             return Self {
                 .allocator = allocator,
                 .matrix = try std.ArrayList([]T).initCapacity(
                     allocator,
                     @max(cap, 1)
-                ),
-                .device = device orelse Devices.SafeCPU,
+                )
             };
         }
 
         /// Initialize Lean with allocator, device (optional) and capacity (number of rows).
         /// Capacity will changed with GetOptimalCapacity(). Otherwise use initCapacityPrecise().
-        pub fn initCapacity(allocator: std.mem.Allocator, device: ?Devices, cap: usize) !Self {
+        pub fn initCapacity(allocator: std.mem.Allocator, cap: usize) !Self {
             return try initCapacityPrecise(
                 allocator,
-                device,
                 stdlean.GetOptimalCapacity(cap)
             );
         }
 
         /// Initialize Lean with allocator and device (optional) with dynamic capacity.
-        pub fn init(allocator: std.mem.Allocator, device: ?Devices) Self {
+        pub fn init(allocator: std.mem.Allocator) Self {
             return Self {
                 .allocator = allocator,
                 .matrix = std.ArrayList([]T).init(allocator),
-                .device = device orelse Devices.SafeCPU,
             };
         }
 
@@ -120,7 +136,7 @@ pub fn BasedValue(comptime T: type) type {
         /// Print matrix as fast as possible
         pub fn quickprint(self: *Self) !void {
             const stdout = std.io.getStdErr().writer();
-            for (self.matrix) |row| {
+            for (self.content()) |row| {
                 try stdout.print("{any}\n", .{row});
             }
         }
@@ -128,7 +144,7 @@ pub fn BasedValue(comptime T: type) type {
         /// Print matrix with customizable format
         pub fn printf(self: *Self, comptime format: []const u8) !void {
             const stdout = std.io.getStdOut().writer();
-            for (self.matrix) |row| {
+            for (self.content()) |row| {
                 for (row) |item| {
                     try stdout.print(format, .{item});
                 }
@@ -142,24 +158,18 @@ pub fn BasedValue(comptime T: type) type {
         }
 
         /// Make a calculation with another matrix: the result is return of this function
-        pub inline fn ReturnCalc(self: *Self, op: Operations, mat: []const []const T) ![][]T {
-            return switch (self.device) {
-                Devices.SafeCPU => compdev.CPUProc(
-                    T,
-                    op,
-                    true,
-                    self.allocator,
-                    self.content(),
+        pub inline fn ReturnCalc(self: *Self, comptime op: Operations, mat: []const []const T) ![][]T {
+            return switch (device) {
+                .SingleThreaded => try compdev.CPUProcST(
+                    T, 
+                    op, 
+                    device, 
+                    self.allocator, 
+                    self.content(), 
                     mat
                 ),
-                Devices.FastCPU => compdev.CPUProc(
-                    T,
-                    op,
-                    false,
-                    self.allocator,
-                    self.content(),
-                    mat
-                )
+                
+                .MultiThreaded => error.NotAvailableNow
             };
         }
 
@@ -198,15 +208,12 @@ pub fn BasedValue(comptime T: type) type {
             try self.Set(&[_][]const T{ marray });
         }
 
-        //pub fn SetFillRule(repeat: usize) !void {
-        //    
-        //}
 
         /// Gets a value from index
         pub fn Get(self: *Self, column: usize, row: usize) !T {
             if (row >= self.rows()) return error.RowOutOfRange;
             if (column >= self.columns()) return error.ColumnOutOfRange;
-            return self.matrix.items[row][column];
+            return self.content()[row][column];
         }
 
         /// Change a specified row/column
@@ -215,8 +222,8 @@ pub fn BasedValue(comptime T: type) type {
                 Axis.Columns => {
                     if (self.rows() != newAxis.len or self.columns() <= axisIndex) return error.ColumnOutOfRange;
 
-                    for (0..self.matrix.items.len) |rowIndex| {
-                        self.matrix.items[rowIndex][axisIndex] = newAxis[rowIndex];
+                    for (0..self.content().len) |rowIndex| {
+                        self.content()[rowIndex][axisIndex] = newAxis[rowIndex];
                     }
                 },
                 Axis.Rows => {
@@ -235,11 +242,11 @@ pub fn BasedValue(comptime T: type) type {
                     if (index >= self.columns()) return error.ColumnOutOfRange;
                     
                     var column = try self.allocator.alloc(T, self.rows());
-                    for (self.matrix.items, 0..) |slice, i| column[i] = slice[index];
+                    for (self.content(), 0..) |slice, i| column[i] = slice[index];
 
                     return column;
                 },
-                Axis.Rows => return if (index >= self.rows()) error.RowOutOfRange else self.matrix.items[index],
+                Axis.Rows => return if (index >= self.rows()) error.RowOutOfRange else self.content()[index],
             }
         }
 
@@ -257,12 +264,12 @@ pub fn BasedValue(comptime T: type) type {
                     var row = std.ArrayList(T).init(self.allocator);
                     errdefer row.deinit();
 
-                    for (0..self.matrix.items.len) |rowIndex| {
+                    for (0..self.content().len) |rowIndex| {
                         row.clearAndFree();
-                        try row.appendSlice(self.matrix.items[rowIndex]);
+                        try row.appendSlice(self.content()[rowIndex]);
                         _ = row.orderedRemove(axisIndex);
 
-                        self.matrix.items[rowIndex] = try self.allocator.dupe(T, row.items);
+                        self.content()[rowIndex] = try self.allocator.dupe(T, row.items);
                     }
                 }
             }
@@ -290,10 +297,10 @@ pub fn BasedValue(comptime T: type) type {
                         const updated = try self.allocator.alloc(T, rowLength + 1);
                         updated[adjColumnIndex] = item;
 
-                        if (adjColumnIndex > 0) @memcpy(updated[0..adjColumnIndex], self.matrix.items[i][0..adjColumnIndex]);
-                        if (self. self.rows() != 1) @memcpy(updated[adjColumnIndex + 1..], self.matrix.items[i][adjColumnIndex..]);
+                        if (adjColumnIndex > 0) @memcpy(updated[0..adjColumnIndex], self.content()[i][0..adjColumnIndex]);
+                        if (self.rows() != 1) @memcpy(updated[adjColumnIndex + 1..], self.content()[i][adjColumnIndex..]);
 
-                        self.matrix.items[i] = updated;
+                        self.content()[i] = updated;
                         
                     }
                 },
@@ -323,7 +330,7 @@ pub fn BasedValue(comptime T: type) type {
             if (self.size() < 1) return error.UnitializedMatrix;
             if (row >= self.rows() or column >= self.columns()) return error.UnmatchedScheme;
 
-            self.matrix.items[row][column] = value;
+            self.content()[row][column] = value;
         }
 
         /// Convert linear index as coordinates (x, y)
@@ -420,7 +427,7 @@ pub fn BasedValue(comptime T: type) type {
                     try self.ChangeAxis(Axis.Columns, column, idx);
                 },
                 Axis.Rows => {
-                    std.mem.reverse(T, self.matrix.items[idx]);
+                    std.mem.reverse(T, self.content()[idx]);
                 }
             }
         }
@@ -480,7 +487,7 @@ pub fn BasedValue(comptime T: type) type {
             var marray = try self.allocator.alloc(T, self.size());
             var i: usize = 0;
 
-            for (self.matrix.items) |slice| {
+            for (self.content()) |slice| {
                 for (slice) |value| {
                     marray[i] = value;
                     i += 1;
@@ -492,7 +499,7 @@ pub fn BasedValue(comptime T: type) type {
 
         /// Free matrix
         pub inline fn Destroy(self: *Self) void {
-            for (self.matrix.items) |row| self.allocator.free(row);
+            for (self.content()) |row| self.allocator.free(row);
             self.matrix.clearAndFree();
         }
 
