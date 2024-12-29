@@ -1,3 +1,8 @@
+// Copyright (c) 2024 Andrea Vaccaro
+//
+// This file is part of libsoundio, which is MIT licensed.
+// See http://opensource.org/licenses/MIT
+
 const std = @import("std");
 const compdev = @import("compmath.zig");
 const stdlean = @import("common.zig");

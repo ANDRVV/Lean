@@ -1,3 +1,8 @@
+// Copyright (c) 2024 Andrea Vaccaro
+//
+// This file is part of libsoundio, which is MIT licensed.
+// See http://opensource.org/licenses/MIT
+
 const leansource = @import("leansrc.zig");
 
 pub const BasedValue = leansource.BasedValue;
