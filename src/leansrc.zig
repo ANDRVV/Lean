@@ -7,6 +7,8 @@ const std = @import("std");
 const compdev = @import("compmath.zig");
 const stdlean = @import("common.zig");
 
+const linalglib = @import("linalg/linalg.zig");
+
 /// LeanErrors is a collection of errors that can be returned by Lean's functions.
 pub const LeanErrors = error {
     /// `WrongMatrixScheme`: the matrix layout is incorrect, for example a odd matrix.
@@ -22,7 +24,18 @@ pub const LeanErrors = error {
     /// `StatNotAvailable` is returned when the requested statistic method is not supported.
     StatNotAvailable,
     /// `UnknownDevice` is returned when the calculation device is not supported or non-existent.
-    UnknownDevice
+    UnknownDevice,
+    /// `InvalidTypeInitialization` is returned when the type is not supported.
+    /// Type must be int or float.
+    InvalidTypeInitialization,
+    /// `OperationNotSupported` is returned when the operation is not supported.
+    OperationNotSupported,
+
+    /// `NonSquareMatrix` is returned when the matrix is not square.
+    NonSquareMatrix,
+    /// `DeterminantEqualToZero` is returned when the matrix determinant is equal to zero
+    /// Therefore you cannot compute inverse of the matrix or other operations
+    DeterminantEqualToZero
 };
 
 /// Axis is a common input value on Lean's functions.
@@ -48,7 +61,9 @@ pub const Stats = enum(u2) {
 };
 
 /// For computing you can specify the operation.
-pub const Operations = enum(u2) {
+/// For Calc and ReturnCalc you can use only
+/// Add, Sub, Mul and Div.
+pub const Operations = enum(u3) {
     /// `Add`: addition.
     Add,
     /// `Sub`: subtraction.
@@ -56,7 +71,10 @@ pub const Operations = enum(u2) {
     /// `Mul`: multiplication.
     Mul,
     /// `Div`: division.
-    Div
+    Div,
+
+    /// `Pow`: power.
+    Pow
 };
 
 /// Used for the selection of the computing device.
@@ -89,6 +107,17 @@ pub const Devices = union(enum) {
     },
 };
 
+pub inline fn Linalg(
+    comptime T: type,
+    comptime compdevice: ?Devices,
+    allocator: std.mem.Allocator
+) linalglib.Linalg (
+    T,
+    compdevice orelse Devices.SingleThreaded.SafeCPU
+) {
+    return .{ .allocator = allocator };
+}
+
 /// Use Lean on custom numeric type
 pub fn BasedValue(comptime T: type, comptime compdevice: ?Devices) type {
     return struct {
@@ -98,9 +127,11 @@ pub fn BasedValue(comptime T: type, comptime compdevice: ?Devices) type {
         matrix: std.ArrayList([]T),
         allocator: std.mem.Allocator,
 
-        /// Initialize Lean with allocator, device (optional) and capacity (number of rows).
+        /// Initialize Lean with allocator and capacity (number of rows).
         /// Capacity WON'T optimized. Otherwise, with optimization, use initCapacity().
         pub fn initCapacityPrecise(allocator: std.mem.Allocator, cap: usize) !Self {
+            if (@typeInfo(T) != .Int and @typeInfo(T) != .Float) return error.InvalidTypeInitialization;
+
             return Self {
                 .allocator = allocator,
                 .matrix = try std.ArrayList([]T).initCapacity(
@@ -110,7 +141,7 @@ pub fn BasedValue(comptime T: type, comptime compdevice: ?Devices) type {
             };
         }
 
-        /// Initialize Lean with allocator, device (optional) and capacity (number of rows).
+        /// Initialize Lean with allocator and capacity (number of rows).
         /// Capacity will changed with GetOptimalCapacity(). Otherwise use initCapacityPrecise().
         pub fn initCapacity(allocator: std.mem.Allocator, cap: usize) !Self {
             return try initCapacityPrecise(
@@ -119,8 +150,10 @@ pub fn BasedValue(comptime T: type, comptime compdevice: ?Devices) type {
             );
         }
 
-        /// Initialize Lean with allocator and device (optional) with dynamic capacity.
+        /// Initialize Lean with allocator with dynamic capacity.
         pub fn init(allocator: std.mem.Allocator) Self {
+            if (@typeInfo(T) != .Int and @typeInfo(T) != .Float) return error.InvalidTypeInitialization;
+
             return Self {
                 .allocator = allocator,
                 .matrix = std.ArrayList([]T).init(allocator),
@@ -137,12 +170,20 @@ pub fn BasedValue(comptime T: type, comptime compdevice: ?Devices) type {
         pub inline fn size(self: *Self) usize { return self.columns() * self.rows(); }
         /// Return the matrix content as 2D array.
         pub inline fn content(self: *Self) [][]T { return self.matrix.items; }
+        /// Check if the matrix is square.
+        pub inline fn isSquare(self: *Self) bool { return self.rows() == self.columns(); }
+        /// Check if the matrix is empty.
+        pub inline fn isEmpty(self: *Self) bool { return self.size() == 0; }
+        /// Check if 2 matrix have the same scheme.
+        pub inline fn isSameScheme(self: *Self, mat: []const []const T) bool {
+            return self.rows() == mat.len and self.columns() == mat[0].len;
+        }
 
         /// Print matrix as fast as possible
         pub fn quickprint(self: *Self) !void {
             const stdout = std.io.getStdErr().writer();
             for (self.content()) |row| {
-                try stdout.print("{any}\n", .{row});
+                try stdout.print("{d}\n", .{row});
             }
         }
 
@@ -164,6 +205,8 @@ pub fn BasedValue(comptime T: type, comptime compdevice: ?Devices) type {
 
         /// Make a calculation with another matrix: the result is return of this function
         pub inline fn ReturnCalc(self: *Self, comptime op: Operations, mat: []const []const T) ![][]T {
+            if (!self.isSameScheme(mat)) return error.UnmatchedScheme;
+
             return switch (device) {
                 .SingleThreaded => try compdev.CPUProcST(
                     T, 
@@ -180,6 +223,15 @@ pub fn BasedValue(comptime T: type, comptime compdevice: ?Devices) type {
 
         /// Set 2D Array
         pub fn Set(self: *Self, mat: []const []const T) !void {
+            if (self.isSameScheme(mat)) {
+                for (mat, 0..) |row, i| {
+                    for (row, 0..) |value, j| {
+                        self.matrix.items[i][j] = value;
+                    }
+                }
+                return;
+            }
+
             for (mat[1..]) |slice| if (slice.len != mat[0].len) return error.WrongMatrixScheme;
             
             self.Destroy();
@@ -227,7 +279,7 @@ pub fn BasedValue(comptime T: type, comptime compdevice: ?Devices) type {
                 Axis.Columns => {
                     if (self.rows() != newAxis.len or self.columns() <= axisIndex) return error.ColumnOutOfRange;
 
-                    for (0..self.content().len) |rowIndex| {
+                    for (0..self.rows()) |rowIndex| {
                         self.content()[rowIndex][axisIndex] = newAxis[rowIndex];
                     }
                 },
@@ -269,7 +321,7 @@ pub fn BasedValue(comptime T: type, comptime compdevice: ?Devices) type {
                     var row = std.ArrayList(T).init(self.allocator);
                     errdefer row.deinit();
 
-                    for (0..self.content().len) |rowIndex| {
+                    for (0..self.rows()) |rowIndex| {
                         row.clearAndFree();
                         try row.appendSlice(self.content()[rowIndex]);
                         _ = row.orderedRemove(axisIndex);
@@ -306,15 +358,16 @@ pub fn BasedValue(comptime T: type, comptime compdevice: ?Devices) type {
                         if (self.rows() != 1) @memcpy(updated[adjColumnIndex + 1..], self.content()[i][adjColumnIndex..]);
 
                         self.content()[i] = updated;
-                        
                     }
                 },
                 Axis.Rows => {
                     if (self.columns() != axisContent.len and self.columns() != 0) return error.RowOutOfRange;
 
-                    const adjRowIndex = @min(self.columns(), axisIndex);
                     const mutable = try self.allocator.dupe(T, axisContent);
-                    try self.matrix.insert(adjRowIndex, mutable);
+                    try self.matrix.insert(
+                        @min(self.columns(), axisIndex),
+                        mutable
+                    );
                 },
             }
         }
@@ -456,17 +509,6 @@ pub fn BasedValue(comptime T: type, comptime compdevice: ?Devices) type {
                 }
             }
         }
-        
-        /// Transpose matrix
-        pub fn Transpose(self: *Self) !void {
-            const matrixCopy = try stdlean.DeepClone(self.allocator, T, self.matrix);
-
-            self.Destroy();
-
-            for (matrixCopy.items, 0..) |row, i| {
-                try self.AddAxis(Axis.Columns, row, i);
-            }
-        }
 
         /// Reshapes the matrix
         pub fn Rescheme(self: *Self, num_columns: usize, num_rows: usize) !void {
@@ -504,12 +546,11 @@ pub fn BasedValue(comptime T: type, comptime compdevice: ?Devices) type {
 
         /// Free matrix
         pub inline fn Destroy(self: *Self) void {
-            for (self.content()) |row| self.allocator.free(row);
             self.matrix.clearAndFree();
         }
 
         /// Deinit matrix
-        pub inline fn deinit(self: Self) void {
+        pub inline fn deinit(self: *Self) void {
             self.matrix.deinit();
         }
     };
