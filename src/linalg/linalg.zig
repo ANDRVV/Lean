@@ -1,3 +1,8 @@
+// Copyright (c) 2025 Andrea Vaccaro
+//
+// This file is part of Lean, which is MIT licensed.
+// See http://opensource.org/licenses/MIT
+
 const std = @import("std");
 const leansrc = @import("../leansrc.zig");
 const compdev = @import("../compmath.zig");
