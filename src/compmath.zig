@@ -95,27 +95,45 @@ pub fn CPUProcST(
 pub fn SafeCPUDevice(comptime T: type) type {
     return struct {
         /// Add is a function that adds two values with overflow checking.
-        pub inline fn Add(a: T, b: T) T { 
-            const v: T, const ov: u1 = @addWithOverflow(a, b);
-            if (ov == 0) return v else @panic("Add overflow.");
+        pub inline fn Add(a: T, b: T) T {
+            if (comptime isFloat(T) ) {
+                const r = a + b;
+                if (isValid(r)) return r else @panic("Overflow or invalid result.");
+            } else {
+                const v: T, const ov: u1 = @addWithOverflow(a, b);
+                if (ov == 0) return v else @panic("Add overflow.");
+            }
         }
 
         /// Sub is a function that subtracts two values with overflow checking.
-        pub inline fn Sub(a: T, b: T) T { 
-            const v: T, const ov: u1 = @subWithOverflow(a, b);
-            if (ov == 0) return v else @panic("Sub overflow.");
+        pub inline fn Sub(a: T, b: T) T {
+            if (comptime isFloat(T) ) {
+                const r = a - b;
+                if (isValid(r)) return r else @panic("Overflow or invalid result.");
+            } else {
+                const v: T, const ov: u1 = @subWithOverflow(a, b);
+                if (ov == 0) return v else @panic("Sub overflow.");
+            }
         }
 
         /// Mul is a function that multiplies two values with overflow checking.
         pub inline fn Mul(a: T, b: T) T {
-            const v: T, const ov: u1 = @mulWithOverflow(a, b);
-            if (ov == 0) return v else @panic("Mul overflow.");
+            if (comptime isFloat(T) ) {
+                const r = a * b;
+                if (isValid(r)) return r else @panic("Overflow or invalid result.");
+            } else {
+                const v: T, const ov: u1 = @mulWithOverflow(a, b);
+                if (ov == 0) return v else @panic("Mul overflow.");
+            }
         }
 
         /// Div is a function that divides two values with division by zero checking and type match.
         pub inline fn Div(a: T, b: T) T {
             if (b == 0) @panic("Division by zero error.");
-            return @divFloor(a, b);
+            if (comptime isFloat(T) ) {
+                const r = a / b;
+                if (isValid(r)) return r else @panic("Invalid result.");
+            } else return @divFloor(a, b);
         }
 
         /// Pow is a function that calculates the power of a value.
@@ -148,20 +166,35 @@ pub fn FixedCPUDevice(comptime T: type) type {
     return struct {
         /// Add is a function that adds two values: return not-added value if there is an error.
         pub inline fn Add(a: T, b: T) T { 
-            const v: T, const ov: u1 = @addWithOverflow(a, b);
-            return if (ov == 0) v else a;
+            if (comptime isFloat(T) ) {
+                const r = a + b;
+                return if (isValid(r)) r else a;
+            } else {
+                const v: T, const ov: u1 = @addWithOverflow(a, b);
+                return if (ov == 0) v else a;
+            }
         }
 
         /// Sub is a function that subtracts two values: return not-subtracted value if there is an error.
         pub inline fn Sub(a: T, b: T) T { 
-            const v: T, const ov: u1 = @subWithOverflow(a, b);
-            return if (ov == 0) v else a;
+            if (comptime isFloat(T) ) {
+                const r = a - b;
+                return if (isValid(r)) r else a;
+            } else {
+                const v: T, const ov: u1 = @subWithOverflow(a, b);
+                return if (ov == 0) v else a;
+            }
         }
 
         /// Mul is a function that multiplies two values: return not-multiplied value if there is an error.
         pub inline fn Mul(a: T, b: T) T {
-            const v: T, const ov: u1 = @mulWithOverflow(a, b);
-            return if (ov == 0) v else a;
+            if (comptime isFloat(T) ) {
+                const r = a * b;
+                return if (isValid(r)) r else a;
+            } else {
+                const v: T, const ov: u1 = @mulWithOverflow(a, b);
+                return if (ov == 0) v else a;
+            }
         }
 
         /// Div is a function that divides two values: return not-divided value if there is an error.
@@ -170,6 +203,14 @@ pub fn FixedCPUDevice(comptime T: type) type {
         /// Pow is a function that calculates the power of a value.
         pub const Pow: fn (a: T, b: T) callconv(.Inline) T = GenericOperations(T, false).Pow;
     };
+}
+
+inline fn isFloat(comptime T: type) bool {
+    return @typeInfo(T) == std.builtin.Type.Float;
+}
+
+inline fn isValid(x: anytype) bool {
+    return !(std.math.isNan(x) or std.math.isInf(x));
 }
 
 fn GenericOperations(comptime T: type, comptime isFastMode: bool) type {
@@ -188,7 +229,7 @@ fn GenericOperations(comptime T: type, comptime isFastMode: bool) type {
             if (b == 1) return a;
             if (b == 2) return a * a;
 
-            if (@typeInfo(T) == .Float) {
+            if (comptime isFloat(T)) {
                 if (b == 0.5) return @sqrt(a);
 
                 return std.math.pow(T, a, b);
