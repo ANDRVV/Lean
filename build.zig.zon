@@ -1,0 +1,14 @@
+.{
+    .name = "Lean",
+    .version = "0.0.1",
+    .minimum_zig_version = "0.0.1",
+
+    .paths = .{
+        "test.zig",
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "LICENSE",
+        "README.md",
+    },
+}
